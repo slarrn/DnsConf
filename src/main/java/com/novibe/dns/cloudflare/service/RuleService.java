@@ -1,5 +1,6 @@
 package com.novibe.dns.cloudflare.service;
 
+import com.novibe.common.exception.DnsApiException;
 import com.novibe.common.util.Log;
 import com.novibe.dns.cloudflare.http.CloudflareRuleClient;
 import com.novibe.dns.cloudflare.http.dto.request.CreateRuleRequest;
@@ -9,7 +10,9 @@ import com.novibe.dns.cloudflare.http.dto.response.rule.SingleRuleApiResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.StructuredTaskScope;
@@ -38,7 +41,7 @@ public class RuleService {
         Log.io("Posting new blocking rule");
         SingleRuleApiResponse result = cloudflareRuleClient.createBlockingRule(rule);
         if (!result.isSuccess()) {
-            Log.fail("Failed to set blocking rule: " + result.getErrors());
+            throw new DnsApiException("Failed to set blocking rule: " + result.getErrors());
         }
     }
 
@@ -51,6 +54,12 @@ public class RuleService {
             scope.fork(() -> createNewOverrideRule(list, overrideIp, rulePrecedenceCounter.next()));
         }
             scope.join();
+        } catch (StructuredTaskScope.FailedException failedException) {
+            // subtask failures are wrapped, but App expects a ProfileSetupException
+            if (failedException.getCause() instanceof DnsApiException dnsApiException) {
+                throw dnsApiException;
+            }
+            throw failedException;
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }
@@ -71,12 +80,13 @@ public class RuleService {
         Log.io("Posting new override rule for IP: " + overrideIp);
         SingleRuleApiResponse result = cloudflareRuleClient.createBlockingRule(rule);
         if (!result.isSuccess()) {
-            Log.fail("Failed to set override rule: " + result.getErrors());
+            throw new DnsApiException("Failed to set override rule for IP %s: %s".formatted(overrideIp, result.getErrors()));
         }
     }
 
     public List<GatewayRuleDto> obtainExistingRules() {
-        return cloudflareRuleClient.getRules().getResult();
+        List<GatewayRuleDto> rules = cloudflareRuleClient.getRules().getResult();
+        return new ArrayList<>(Objects.requireNonNullElse(rules, List.of()));
     }
 
     public List<GatewayRuleDto> removeOldRules(List<GatewayRuleDto> rules) {
